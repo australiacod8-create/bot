@@ -1,9 +1,23 @@
+[file name]: index.php
+[file content begin]
 <?php
 // Bot configuration
-define('BOT_TOKEN', getenv('BOT_TOKEN'));
+define('BOT_TOKEN', getenv('BOT_TOKEN') ?: 'Coloque_Seu_Token_Aqui');
 define('API_URL', 'https://api.telegram.org/bot' . BOT_TOKEN . '/');
 define('USERS_FILE', 'users.json');
 define('ERROR_LOG', 'error.log');
+
+// Initialize bot (set webhook)
+function initializeBot() {
+    try {
+        $webhook_url = getenv('RENDER_EXTERNAL_URL') . '/webhook';
+        file_get_contents(API_URL . 'setWebhook?url=' . urlencode($webhook_url));
+        return true;
+    } catch (Exception $e) {
+        logError("Falha na inicialização: " . $e->getMessage());
+        return false;
+    }
+}
 
 // Error logging
 function logError($message) {
@@ -19,7 +33,7 @@ function loadUsers() {
         }
         return json_decode(file_get_contents(USERS_FILE), true) ?: [];
     } catch (Exception $e) {
-        logError("Load users failed: " . $e->getMessage());
+        logError("Falha ao carregar usuários: " . $e->getMessage());
         return [];
     }
 }
@@ -29,7 +43,7 @@ function saveUsers($users) {
         file_put_contents(USERS_FILE, json_encode($users, JSON_PRETTY_PRINT));
         return true;
     } catch (Exception $e) {
-        logError("Save users failed: " . $e->getMessage());
+        logError("Falha ao salvar usuários: " . $e->getMessage());
         return false;
     }
 }
@@ -53,7 +67,7 @@ function sendMessage($chat_id, $text, $keyboard = null) {
         file_get_contents($url);
         return true;
     } catch (Exception $e) {
-        logError("Send message failed: " . $e->getMessage());
+        logError("Falha ao enviar mensagem: " . $e->getMessage());
         return false;
     }
 }
@@ -61,9 +75,29 @@ function sendMessage($chat_id, $text, $keyboard = null) {
 // Main keyboard
 function getMainKeyboard() {
     return [
-        [['text' => '💰 Earn', 'callback_data' => 'earn'], ['text' => '💳 Balance', 'callback_data' => 'balance']],
-        [['text' => '🏆 Leaderboard', 'callback_data' => 'leaderboard'], ['text' => '👥 Referrals', 'callback_data' => 'referrals']],
-        [['text' => '🏧 Withdraw', 'callback_data' => 'withdraw'], ['text' => '❓ Help', 'callback_data' => 'help']]
+        [['text' => '💰 Adicionar saldo', 'callback_data' => 'earn'], ['text' => '💳 Perfil', 'callback_data' => 'balance']],
+        [['text' => '🏆 Ranking', 'callback_data' => 'leaderboard'], ['text' => '👥 Indicações', 'callback_data' => 'referrals']],
+        [['text' => '🏧 Comprar', 'callback_data' => 'withdraw'], ['text' => '❓ Ajuda', 'callback_data' => 'help']]
+    ];
+}
+
+// PIX keyboard
+function getPixKeyboard() {
+    return [
+        [['text' => 'R$ 10,00', 'callback_data' => 'pix_10']],
+        [['text' => 'R$ 20,00', 'callback_data' => 'pix_20']],
+        [['text' => 'R$ 50,00', 'callback_data' => 'pix_50']],
+        [['text' => 'R$ 100,00', 'callback_data' => 'pix_100']],
+        [['text' => '⬅️ Voltar', 'callback_data' => 'back']]
+    ];
+}
+
+// Copy PIX keyboard
+function getCopyPixKeyboard($amount) {
+    return [
+        [['text' => '📋 Copiar Chave PIX', 'callback_data' => 'copy_pix']],
+        [['text' => '✅ Pagamento Confirmado', 'callback_data' => 'confirm_payment_' . $amount]],
+        [['text' => '⬅️ Voltar', 'callback_data' => 'back']]
     ];
 }
 
@@ -72,14 +106,18 @@ function processUpdate($update) {
     $users = loadUsers();
     
     if (isset($update['message'])) {
-        $message = $update['message'];
-        $chat_id = $message['chat']['id'];
-        $text = trim($message['text'] ?? '');
+        $chat_id = $update['message']['chat']['id'];
+        $first_name = $update['message']['chat']['first_name'] ?? '';
+        $last_name = $update['message']['chat']['last_name'] ?? '';
+        $username = $update['message']['chat']['username'] ?? '';
+        $text = trim($update['message']['text'] ?? '');
         
         // Create new user if doesn't exist
         if (!isset($users[$chat_id])) {
             $users[$chat_id] = [
-                'balance' => 0,
+                'name' => trim("$first_name $last_name"),
+                'username' => $username,
+                'balance' => 0.00,
                 'last_earn' => 0,
                 'referrals' => 0,
                 'ref_code' => substr(md5($chat_id . time()), 0, 8),
@@ -94,25 +132,47 @@ function processUpdate($update) {
                     if ($user['ref_code'] === $ref && $id != $chat_id) {
                         $users[$chat_id]['referred_by'] = $id;
                         $users[$id]['referrals']++;
-                        $users[$id]['balance'] += 50;
-                        sendMessage($id, "🎉 New referral! +50 points bonus!");
+                        $users[$id]['balance'] += 10.00; // Bônus de R$ 10,00 por indicação
+                        sendMessage($id, "🎉 Nova indicação! Bônus de R$ 10,00 adicionado!");
                         break;
                     }
                 }
             }
             
-            $msg = "Welcome to Earning Bot!\nEarn points, invite friends, and withdraw your earnings!\nYour referral code: <b>{$users[$chat_id]['ref_code']}</b>";
-            sendMessage($chat_id, $msg, getMainKeyboard());
+            // Mensagem de boas-vindas
+            $welcome_msg = "Bem-vindo(a) à nossa loja de streaming!\n";
+            $welcome_msg .= "Prepare-se para uma experiência de maratona incrível com seus filmes e séries preferidos. Antes de prosseguir, confira a disponibilidade da conta que você deseja em nosso catálogo.\n\n";
+            $welcome_msg .= "É importante saber que não fazemos reembolsos via PIX, apenas com saldo no bot. Por favor, escolha seu serviço com cuidado.\n\n";
+            $welcome_msg .= "Se não encontrou o que procurava, nosso suporte está à disposição para te ajudar rapidamente. Entre em contato conosco: @Dogdoslinks00.\n\n";
+            
+            // Detalhes da conta
+            $balance_formatted = number_format($users[$chat_id]['balance'], 2, ',', '.');
+            $account_msg = "_________________________________________________\n";
+            $account_msg .= "Detalhes da sua conta:\n\n";
+            $account_msg .= "Nome: " . ($users[$chat_id]['name'] ?: 'Não informado') . "\n\n";
+            $account_msg .= "ID: $chat_id\n\n";
+            $account_msg .= "Saldo: R$ $balance_formatted\n\n";
+            $account_msg .= "Pontos de indicação: 0,00\n\n";
+            $account_msg .= "Pessoas indicadas: " . $users[$chat_id]['referrals'] . "\n";
+            $account_msg .= "_________________________________________________";
+            
+            // Enviar mensagem de boas-vindas
+            sendMessage($chat_id, $welcome_msg);
+            
+            // Enviar detalhes da conta com teclado
+            sendMessage($chat_id, $account_msg, getMainKeyboard());
         }
         
     } elseif (isset($update['callback_query'])) {
-        $callback = $update['callback_query'];
-        $chat_id = $callback['message']['chat']['id'];
-        $data = $callback['data'];
+        $chat_id = $update['callback_query']['message']['chat']['id'];
+        $data = $update['callback_query']['data'];
+        $message_id = $update['callback_query']['message']['message_id'];
         
         if (!isset($users[$chat_id])) {
             $users[$chat_id] = [
-                'balance' => 0,
+                'name' => '',
+                'username' => '',
+                'balance' => 0.00,
                 'last_earn' => 0,
                 'referrals' => 0,
                 'ref_code' => substr(md5($chat_id . time()), 0, 8),
@@ -122,74 +182,165 @@ function processUpdate($update) {
         
         switch ($data) {
             case 'earn':
-                $time_diff = time() - $users[$chat_id]['last_earn'];
-                if ($time_diff < 60) {
-                    $remaining = 60 - $time_diff;
-                    $msg = "⏳ Please wait $remaining seconds before earning again!";
-                } else {
-                    $earn = 10;
-                    $users[$chat_id]['balance'] += $earn;
-                    $users[$chat_id]['last_earn'] = time();
-                    $msg = "✅ You earned $earn points!\nNew balance: {$users[$chat_id]['balance']}";
-                }
+                $msg = "💳 <b>Adicionar Saldo via PIX</b>\n\nEscolha o valor que deseja adicionar:";
+                sendMessage($chat_id, $msg, getPixKeyboard());
+                break;
+                
+            case 'pix_10':
+                processPixPayment($chat_id, 10.00, $users);
+                break;
+                
+            case 'pix_20':
+                processPixPayment($chat_id, 20.00, $users);
+                break;
+                
+            case 'pix_50':
+                processPixPayment($chat_id, 50.00, $users);
+                break;
+                
+            case 'pix_100':
+                processPixPayment($chat_id, 100.00, $users);
+                break;
+                
+            case 'copy_pix':
+                // Envia mensagem com chave PIX copiável
+                $pix_key = "65992779486";
+                $msg = "📋 <b>Chave PIX Copiada!</b>\n\n<code>$pix_key</code>\n\n✅ Chave PIX copiada para a área de transferência!\n\nApós realizar o pagamento, clique em '✅ Pagamento Confirmado' para adicionar o saldo automaticamente.";
+                
+                // Responde ao callback para mostrar "copiado" para o usuário
+                answerCallbackQuery($update['callback_query']['id'], "Chave PIX copiada! ✅");
+                sendMessage($chat_id, $msg);
+                break;
+                
+            case strpos($data, 'confirm_payment_') === 0:
+                // Extrai o valor do pagamento do callback_data
+                $amount = floatval(str_replace('confirm_payment_', '', $data));
+                
+                // Adiciona o saldo ao usuário
+                $users[$chat_id]['balance'] += $amount;
+                
+                $amount_formatted = number_format($amount, 2, ',', '.');
+                $new_balance_formatted = number_format($users[$chat_id]['balance'], 2, ',', '.');
+                
+                $msg = "✅ <b>Pagamento confirmado!</b>\n\nValor: R$ {$amount_formatted}\nSaldo adicionado com sucesso!\nSeu novo saldo: R$ {$new_balance_formatted}";
+                sendMessage($chat_id, $msg, getMainKeyboard());
+                break;
+                
+            case 'back':
+                $msg = "Voltando ao menu principal...";
+                sendMessage($chat_id, $msg, getMainKeyboard());
                 break;
                 
             case 'balance':
-                $msg = "💳 Your Balance\nPoints: {$users[$chat_id]['balance']}\nReferrals: {$users[$chat_id]['referrals']}";
+                $balance_formatted = number_format($users[$chat_id]['balance'], 2, ',', '.');
+                $msg = "💳 Seu Perfil\nSaldo: R$ {$balance_formatted}\nIndicações: {$users[$chat_id]['referrals']}";
+                sendMessage($chat_id, $msg, getMainKeyboard());
                 break;
                 
             case 'leaderboard':
-                $sorted = array_column($users, 'balance');
+                $sorted = [];
+                foreach ($users as $id => $user) {
+                    $sorted[$id] = $user['balance'];
+                }
                 arsort($sorted);
                 $top = array_slice($sorted, 0, 5, true);
-                $msg = "🏆 Top Earners\n";
+                $msg = "🏆 Top Ganhadores\n";
                 $i = 1;
-                foreach ($top as $id => $bal) {
-                    $msg .= "$i. User $id: $bal points\n";
+                foreach ($top as $id => $balance) {
+                    $balance_formatted = number_format($balance, 2, ',', '.');
+                    $msg .= "$i. Usuário $id: R$ {$balance_formatted}\n";
                     $i++;
                 }
+                sendMessage($chat_id, $msg, getMainKeyboard());
                 break;
                 
             case 'referrals':
-                $msg = "👥 Referral System\nYour code: <b>{$users[$chat_id]['ref_code']}</b>\nReferrals: {$users[$chat_id]['referrals']}\nInvite link: t.me/" . BOT_TOKEN . "?start={$users[$chat_id]['ref_code']}\n50 points per referral!";
+                $msg = "👥 Sistema de Indicação\nSeu código: <b>{$users[$chat_id]['ref_code']}</b>\nIndicações: {$users[$chat_id]['referrals']}\nLink de convite: t.me/" . BOT_TOKEN . "?start={$users[$chat_id]['ref_code']}\nR$ 10,00 por indicação!";
+                sendMessage($chat_id, $msg, getMainKeyboard());
                 break;
                 
             case 'withdraw':
-                $min = 100;
+                $min = 10.00;
                 if ($users[$chat_id]['balance'] < $min) {
-                    $msg = "🏧 Withdrawal\nMinimum: $min points\nYour balance: {$users[$chat_id]['balance']}\nNeed " . ($min - $users[$chat_id]['balance']) . " more points!";
+                    $balance_formatted = number_format($users[$chat_id]['balance'], 2, ',', '.');
+                    $missing = number_format($min - $users[$chat_id]['balance'], 2, ',', '.');
+                    $msg = "🏧 Comprar\nMínimo: R$ " . number_format($min, 2, ',', '.') . "\nSeu saldo: R$ {$balance_formatted}\nFaltam R$ {$missing}!";
                 } else {
                     $amount = $users[$chat_id]['balance'];
-                    $users[$chat_id]['balance'] = 0;
-                    $msg = "🏧 Withdrawal of $amount points requested!\nOur team will process it soon.";
+                    $users[$chat_id]['balance'] = 0.00;
+                    $amount_formatted = number_format($amount, 2, ',', '.');
+                    $msg = "🏧 Compra de R$ {$amount_formatted} realizada!\nSeus itens serão entregues em breve.";
                 }
+                sendMessage($chat_id, $msg, getMainKeyboard());
                 break;
                 
             case 'help':
-                $msg = "❓ Help\n💰 Earn: Get 10 points/min\n👥 Refer: 50 points/ref\n🏧 Withdraw: Min 100 points\nUse buttons below to navigate!";
+                $msg = "❓ Ajuda\n💰 Adicionar saldo: Recarregue via PIX\n👥 Indicar: R$ 10,00/indicação\n🏧 Comprar: Mín R$ 10,00\nUse os botões abaixo para navegar!";
+                sendMessage($chat_id, $msg, getMainKeyboard());
                 break;
         }
         
-        sendMessage($chat_id, $msg, getMainKeyboard());
+        saveUsers($users);
     }
+}
+
+// Answer callback query (para mostrar feedback ao usuário)
+function answerCallbackQuery($callback_query_id, $text) {
+    try {
+        $params = [
+            'callback_query_id' => $callback_query_id,
+            'text' => $text,
+            'show_alert' => false
+        ];
+        
+        $url = API_URL . 'answerCallbackQuery?' . http_build_query($params);
+        file_get_contents($url);
+        return true;
+    } catch (Exception $e) {
+        logError("Falha ao responder callback: " . $e->getMessage());
+        return false;
+    }
+}
+
+// Process PIX payment
+function processPixPayment($chat_id, $amount, &$users) {
+    $pix_key = "65992779486";
+    $amount_formatted = number_format($amount, 2, ',', '.');
     
-    saveUsers($users);
+    $msg = "💳 <b>PIX Automático - R$ {$amount_formatted}</b>\n\n";
+    $msg .= "Valor: <b>R$ {$amount_formatted}</b>\n";
+    $msg .= "Saldo a receber: <b>R$ {$amount_formatted}</b>\n\n";
+    $msg .= "Chave PIX: <code>$pix_key</code>\n\n";
+    $msg .= "📋 <b>Instruções:</b>\n";
+    $msg .= "1. Clique em '📋 Copiar Chave PIX' para copiar automaticamente\n";
+    $msg .= "2. Abra seu app bancário\n";
+    $msg .= "3. Cole a chave e pague R$ {$amount_formatted}\n";
+    $msg .= "4. Clique em '✅ Pagamento Confirmado'\n\n";
+    $msg .= "Seu saldo será adicionado automaticamente!";
+    
+    sendMessage($chat_id, $msg, getCopyPixKeyboard($amount));
 }
 
 // Webhook handler
-$content = file_get_contents("php://input");
-$update = json_decode($content, true);
-
-if ($update) {
-    processUpdate($update);
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $content = file_get_contents("php://input");
+    $update = json_decode($content, true);
+    
+    if ($update) {
+        processUpdate($update);
+        http_response_code(200);
+        echo "OK";
+    } else {
+        http_response_code(400);
+        echo "Requisição inválida";
+    }
 } else {
-    // Webhook setup verification
-    if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-        $render_url = getenv('RENDER_URL');
-        echo "Bot is running! Set webhook using this URL:\n";
-        echo $render_url . "/webhook\n\n";
-        echo "Use this command to set webhook:\n";
-        echo "curl -X GET " . API_URL . "setWebhook?url=" . urlencode($render_url . "/webhook");
+    // Set webhook on first visit
+    if (initializeBot()) {
+        echo "Webhook configurado com sucesso!";
+    } else {
+        echo "Falha ao configurar webhook. Verifique error.log";
     }
 }
 ?>
+[file content end]
